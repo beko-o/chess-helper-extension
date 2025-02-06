@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Chess Assistant",
+  "version": "1.0",
+  "description": "Шахматный помощник",
+  "permissions": ["storage", "activeTab", "scripting"],
+  "host_permissions": ["https://chess.com/*", "https://www.chess.com/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.chess.com/*"],
+      "js": ["content.js"]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": "icon.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["stockfish.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
