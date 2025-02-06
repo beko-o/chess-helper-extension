@@ -65,11 +65,22 @@
     arrowCheckbox.checked = (savedArrows === "true");
     arrowLabel.appendChild(arrowCheckbox);
     
+    // Новый checkbox для показа подцветки оценки хода
+    const highlightLabel = document.createElement("label");
+    highlightLabel.textContent = " Показывать подцветку оценки хода: ";
+    const highlightCheckbox = document.createElement("input");
+    highlightCheckbox.type = "checkbox";
+    let savedHighlight = localStorage.getItem("chessAssistantShowMoveHighlight") || "false";
+    highlightCheckbox.checked = (savedHighlight === "true");
+    highlightLabel.appendChild(highlightCheckbox);
+    
     panel.appendChild(colorLabel);
     panel.appendChild(document.createElement("br"));
     panel.appendChild(depthLabel);
     panel.appendChild(document.createElement("br"));
     panel.appendChild(arrowLabel);
+    panel.appendChild(document.createElement("br"));
+    panel.appendChild(highlightLabel);
     
     document.body.appendChild(panel);
     
@@ -98,6 +109,10 @@
       localStorage.setItem("chessAssistantShowArrows", arrowCheckbox.checked);
       assistantShowArrows = arrowCheckbox.checked;
       if (!assistantShowArrows) clearArrows();
+    });
+    highlightCheckbox.addEventListener("change", () => {
+      localStorage.setItem("chessAssistantShowMoveHighlight", highlightCheckbox.checked);
+      assistantShowMoveHighlight = highlightCheckbox.checked;
     });
   }
   
@@ -144,6 +159,7 @@
   let myColor = localStorage.getItem("chessAssistantColor") || "w";
   let assistantDepth = parseInt(localStorage.getItem("chessAssistantDepth"), 10) || 15;
   let assistantShowArrows = (localStorage.getItem("chessAssistantShowArrows") === "true");
+  let assistantShowMoveHighlight = (localStorage.getItem("chessAssistantShowMoveHighlight") === "true");
   
   createSettingsPanel();
   createEvaluationBar();
@@ -155,7 +171,7 @@
   
   // Для оценки качества хода сохраняем последний рекомендованный ход
   let lastBestMove = "";
-  // И определяем цвета для разных категорий
+  // Определяем цвета для разных категорий качества
   const qualityColors = {
     brilliant: "#40e0d0",  // бирюзовый
     great: "#add8e6",      // светло-синий
@@ -272,7 +288,7 @@
       // Если сейчас не ваш ход – значит последний ход завершён, оценим его качество
       if (currentTurn !== myColor) {
         dlog("Сейчас ход", currentTurn, "(не мой, мой цвет:", myColor, "). Оценка сыгранного хода.");
-        evaluateLastMoveQuality();
+        if (assistantShowMoveHighlight) evaluateLastMoveQuality();
         clearSuggestion();
         return;
       }
@@ -329,7 +345,7 @@
       if (scoreInfo.type === "cp") {
         let cp = scoreInfo.value;
         let clamped = Math.max(-300, Math.min(300, cp));
-        let percentage = 50 + (clamped / 600) * 100; // 0% - 100%, 50% нейтрально
+        let percentage = 50 + (clamped / 600) * 100;
         innerBar.style.width = percentage + "%";
         innerBar.style.backgroundColor = cp > 0 ? "green" : cp < 0 ? "red" : "gray";
         evalText.textContent = "Eval: " + cp + " cp";
@@ -423,7 +439,7 @@
 
     // === Конец функций отрисовки стрелок ===
 
-    // Функция выделения клетки (например, чтобы подсветить куда шла фигурка)
+    // Функция выделения клетки (подсветка)
     function highlightSquare(square, color) {
       let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
       if (!board) return;
@@ -459,7 +475,7 @@
     // (упрощённая логика: если последний сыгранный ход (из списка) совпадает по клетке назначения с рекомендованным bestmove,
     // то качество = "best" (светло-зеленый); иначе — "blunder" (красный))
     function evaluateLastMoveQuality() {
-      let moveListContainer = document.querySelector('.play-controller-moveList.move-list') ||
+      let moveListContainer = document.querySelector('.play-controller-moveList.move.list') ||
                               document.querySelector('wc-simple-move-list');
       if (moveListContainer) {
         let moveElements;
@@ -472,14 +488,17 @@
           let lastMoveElement = moveElements[moveElements.length - 1];
           let playedDest = lastMoveElement.textContent.trim(); // например, "e4"
           if (lastBestMove && lastBestMove.length >= 4) {
-            let bestDest = lastBestMove.substring(2,4);
+            let bestDest = lastBestMove.substring(2, 4);
             let quality;
             if (playedDest === bestDest) {
               quality = "best";
             } else {
               quality = "blunder";
             }
-            highlightSquare(playedDest, qualityColors[quality]);
+            // Если включена подцветка оценки хода, подсвечиваем клетку
+            if (assistantShowMoveHighlight) {
+              highlightSquare(playedDest, qualityColors[quality]);
+            }
             let qualityDisplay = document.getElementById("move-quality-display");
             if (!qualityDisplay) {
               qualityDisplay = document.createElement("div");
