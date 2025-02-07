@@ -65,9 +65,9 @@
     arrowCheckbox.checked = (savedArrows === "true");
     arrowLabel.appendChild(arrowCheckbox);
     
-    // Новый checkbox для показа подцветки оценки хода
+    // Checkbox для показа подцветки оценки хода
     const highlightLabel = document.createElement("label");
-    highlightLabel.textContent = " Показывать подцветку оценки хода: ";
+    highlightLabel.textContent = " Показывать подцветку хода: ";
     const highlightCheckbox = document.createElement("input");
     highlightCheckbox.type = "checkbox";
     let savedHighlight = localStorage.getItem("chessAssistantShowMoveHighlight") || "false";
@@ -169,9 +169,10 @@
   let lastBoardHash = "";
   let currentTurn = "w";
   
-  // Для оценки качества хода сохраняем последний рекомендованный ход
-  let lastBestMove = "";
-  // Определяем цвета для разных категорий качества
+  // Для оценки качества хода сохраняем варианты (например, два варианта)
+  let bestMoves = []; // массив для хранения двух вариантов
+  
+  // Определяем цвета для разных категорий качества (пример)
   const qualityColors = {
     brilliant: "#40e0d0",  // бирюзовый
     great: "#add8e6",      // светло-синий
@@ -207,22 +208,36 @@
   createStockfishWorker().then(stockfish => {
     dlog("Stockfish загружен");
 
+    // Инициализация Stockfish: включаем MultiPV = 2 для двух вариантов
     stockfish.postMessage("uci");
+    stockfish.postMessage("setoption name MultiPV value 2");
     stockfish.postMessage("isready");
 
     stockfish.onmessage = function (event) {
-      if (event.data.startsWith("info") && event.data.indexOf("score") !== -1) {
-        let scoreInfo = parseScore(event.data);
-        if (scoreInfo && scoreInfo.type) {
-          updateEvaluationBar(scoreInfo);
+      let msg = event.data;
+      // Обрабатываем сообщения info с multipv
+      if (msg.startsWith("info") && msg.indexOf("multipv") !== -1) {
+        let tokens = msg.split(" ");
+        let mpIndex = tokens.indexOf("multipv");
+        if (mpIndex !== -1 && tokens.length > mpIndex + 1) {
+          let mp = parseInt(tokens[mpIndex + 1], 10); // номер варианта (1 или 2)
+          let pvIndex = tokens.indexOf("pv");
+          if (pvIndex !== -1 && tokens.length > pvIndex + 1) {
+            let move = tokens[pvIndex + 1]; // первый ход варианта
+            bestMoves[mp - 1] = move;
+          }
+        }
+        if (msg.indexOf("score") !== -1) {
+          let scoreInfo = parseScore(msg);
+          if (scoreInfo && scoreInfo.type) {
+            updateEvaluationBar(scoreInfo);
+          }
         }
       }
-      if (event.data.startsWith("bestmove")) {
-        let bestMove = event.data.split(" ")[1];
-        if (bestMove !== "(none)") {
-          lastBestMove = bestMove;
-          dlog("Лучший ход:", bestMove);
-          showBestMove(bestMove);
+      // При получении сообщения bestmove – выводим варианты
+      if (msg.startsWith("bestmove")) {
+        if (bestMoves.length > 0) {
+          showBestMoves(bestMoves);
         }
       }
     };
@@ -242,13 +257,13 @@
       clearArrows();
     }
 
-    // Резервный метод: вычисление «хеша» позиции (FEN без информации о ходе)
+    // Резервный метод: вычисление "хеша" позиции (FEN без информации о ходе)
     function computeBoardHash() {
       let pieces = document.querySelectorAll(".piece");
       return calculateFENFromPieces(pieces);
     }
 
-    // Определение текущего хода по списку ходов (move list)
+    // Определение текущего хода по списку ходов
     function getCurrentTurnFromMoveList() {
       let moveListContainer = document.querySelector('.play-controller-moveList.move-list') ||
                               document.querySelector('wc-simple-move-list');
@@ -285,7 +300,7 @@
           dlog("Позиция не изменилась (резерв).");
         }
       }
-      // Если сейчас не ваш ход – значит последний ход завершён, оценим его качество
+      // Если сейчас не ваш ход – оцениваем последний ход и очищаем совет
       if (currentTurn !== myColor) {
         dlog("Сейчас ход", currentTurn, "(не мой, мой цвет:", myColor, "). Оценка сыгранного хода.");
         if (assistantShowMoveHighlight) evaluateLastMoveQuality();
@@ -297,8 +312,8 @@
       analyzePosition(fen);
     }
 
-    // Функция отображения рекомендованного хода (текст и, если включено, стрелка)
-    function showBestMove(move) {
+    // Функция отображения рекомендованных ходов (несколько вариантов)
+    function showBestMoves(moves) {
       let moveDisplay = document.getElementById("best-move-display");
       if (!moveDisplay) {
         moveDisplay = document.createElement("div");
@@ -312,117 +327,36 @@
         moveDisplay.style.borderRadius = "5px";
         document.body.appendChild(moveDisplay);
       }
-      moveDisplay.innerText = "Рекомендованный ход: " + move;
-      if (assistantShowArrows && move.length >= 4) {
-        let fromSquare = move.substring(0, 2);
-        let toSquare = move.substring(2, 4);
-        drawArrow(fromSquare, toSquare);
+      moveDisplay.innerText = "Рекомендованные ходы: " + moves.join(", ");
+      if (assistantShowArrows) {
+        clearArrows();
+        // Отрисовываем два варианта: первый – зелёный, второй – синий
+        moves.forEach((move, idx) => {
+          if (move.length >= 4) {
+            let fromSquare = move.substring(0, 2);
+            let toSquare = move.substring(2, 4);
+            let color = (idx === 0) ? "green" : "blue";
+            drawColoredArrow(fromSquare, toSquare, color);
+          }
+        });
       }
     }
 
-    // Функция парсинга оценки из сообщения Stockfish
-    function parseScore(message) {
-      let parts = message.split(" ");
-      let idx = parts.indexOf("score");
-      if (idx !== -1 && parts.length > idx + 2) {
-        let scoreType = parts[idx + 1];
-        let scoreValue = parseInt(parts[idx + 2], 10);
-        if (scoreType === "cp") {
-          return { type: "cp", value: scoreValue };
-        } else if (scoreType === "mate") {
-          return { type: "mate", value: scoreValue };
-        }
-      }
-      return null;
-    }
-
-    // Функция обновления evaluation bar
-    function updateEvaluationBar(scoreInfo) {
-      const evalBar = document.getElementById("evaluation-bar");
-      const innerBar = document.getElementById("evaluation-bar-inner");
-      const evalText = document.getElementById("evaluation-text");
-      if (!evalBar || !innerBar || !evalText) return;
-      if (scoreInfo.type === "cp") {
-        let cp = scoreInfo.value;
-        let clamped = Math.max(-300, Math.min(300, cp));
-        let percentage = 50 + (clamped / 600) * 100;
-        innerBar.style.width = percentage + "%";
-        innerBar.style.backgroundColor = cp > 0 ? "green" : cp < 0 ? "red" : "gray";
-        evalText.textContent = "Eval: " + cp + " cp";
-      } else if (scoreInfo.type === "mate") {
-        innerBar.style.width = scoreInfo.value > 0 ? "100%" : "0%";
-        innerBar.style.backgroundColor = scoreInfo.value > 0 ? "green" : "red";
-        evalText.textContent = "Mate in " + Math.abs(scoreInfo.value);
-      }
-    }
-
-    // === Функции отрисовки стрелок на доске ===
-
-    function getSquareCenter(square, boardRect) {
-      const squareSize = boardRect.width / 8;
-      let file = square[0];
-      let rank = parseInt(square[1], 10);
-      let fileIndex = file.charCodeAt(0) - "a".charCodeAt(0);
-      let rankIndex;
-      if (myColor === "w") {
-        rankIndex = 8 - rank;
-      } else {
-        rankIndex = rank - 1;
-        fileIndex = 7 - fileIndex;
-      }
-      return {
-        x: fileIndex * squareSize + squareSize / 2,
-        y: rankIndex * squareSize + squareSize / 2
-      };
-    }
-
-    function getArrowOverlay(board) {
-      let overlay = board.querySelector("#assistant-arrow-overlay");
-      if (!overlay) {
-        overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-        overlay.setAttribute("id", "assistant-arrow-overlay");
-        overlay.style.position = "absolute";
-        overlay.style.top = "0";
-        overlay.style.left = "0";
-        overlay.style.width = "100%";
-        overlay.style.height = "100%";
-        overlay.style.pointerEvents = "none";
-        const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
-        const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
-        marker.setAttribute("id", "arrowhead");
-        marker.setAttribute("markerWidth", "10");
-        marker.setAttribute("markerHeight", "7");
-        marker.setAttribute("refX", "0");
-        marker.setAttribute("refY", "3.5");
-        marker.setAttribute("orient", "auto");
-        const polygon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-        polygon.setAttribute("points", "0 0, 10 3.5, 0 7");
-        polygon.setAttribute("fill", "red");
-        marker.appendChild(polygon);
-        defs.appendChild(marker);
-        overlay.appendChild(defs);
-        board.style.position = "relative";
-        board.appendChild(overlay);
-      }
-      return overlay;
-    }
-
-    function drawArrow(fromSquare, toSquare) {
+    // Функция отрисовки одного стрелки с заданным цветом (не очищает оверлей)
+    function drawColoredArrow(fromSquare, toSquare, strokeColor) {
       let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
       if (!board) return;
       let boardRect = board.getBoundingClientRect();
       let fromCenter = getSquareCenter(fromSquare, boardRect);
       let toCenter = getSquareCenter(toSquare, boardRect);
       let overlay = getArrowOverlay(board);
-      while (overlay.lastChild && overlay.lastChild.nodeName === "line") {
-        overlay.removeChild(overlay.lastChild);
-      }
+      // Создаем линию
       let line = document.createElementNS("http://www.w3.org/2000/svg", "line");
       line.setAttribute("x1", fromCenter.x);
       line.setAttribute("y1", fromCenter.y);
       line.setAttribute("x2", toCenter.x);
       line.setAttribute("y2", toCenter.y);
-      line.setAttribute("stroke", "red");
+      line.setAttribute("stroke", strokeColor);
       line.setAttribute("stroke-width", "4");
       line.setAttribute("marker-end", "url(#arrowhead)");
       overlay.appendChild(line);
@@ -437,9 +371,7 @@
       }
     }
 
-    // === Конец функций отрисовки стрелок ===
-
-    // Функция выделения клетки (подсветка)
+    // === Функция выделения клетки (подсветка) ===
     function highlightSquare(square, color) {
       let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
       if (!board) return;
@@ -472,8 +404,7 @@
     }
 
     // Функция оценки качества последнего хода и подсветки клетки назначения
-    // (упрощённая логика: если последний сыгранный ход (из списка) совпадает по клетке назначения с рекомендованным bestmove,
-    // то качество = "best" (светло-зеленый); иначе — "blunder" (красный))
+    // (Демонстрационная логика: если клетка назначения последнего сыгранного хода совпадает с клеткой первого рекомендованного хода – качество = "best", иначе "blunder")
     function evaluateLastMoveQuality() {
       let moveListContainer = document.querySelector('.play-controller-moveList.move.list') ||
                               document.querySelector('wc-simple-move-list');
@@ -486,16 +417,15 @@
         }
         if (moveElements.length > 0) {
           let lastMoveElement = moveElements[moveElements.length - 1];
-          let playedDest = lastMoveElement.textContent.trim(); // например, "e4"
-          if (lastBestMove && lastBestMove.length >= 4) {
-            let bestDest = lastBestMove.substring(2, 4);
+          let playedDest = lastMoveElement.textContent.trim();
+          if (bestMoves.length > 0 && bestMoves[0] && bestMoves[0].length >= 4) {
+            let bestDest = bestMoves[0].substring(2, 4);
             let quality;
             if (playedDest === bestDest) {
               quality = "best";
             } else {
               quality = "blunder";
             }
-            // Если включена подцветка оценки хода, подсвечиваем клетку
             if (assistantShowMoveHighlight) {
               highlightSquare(playedDest, qualityColors[quality]);
             }
@@ -592,7 +522,7 @@
       return null;
     }
 
-    // Функция обновления evaluation bar
+    // Функция обновления evaluation bar с нелинейным масштабированием
     function updateEvaluationBar(scoreInfo) {
       const evalBar = document.getElementById("evaluation-bar");
       const innerBar = document.getElementById("evaluation-bar-inner");
@@ -600,19 +530,1075 @@
       if (!evalBar || !innerBar || !evalText) return;
       if (scoreInfo.type === "cp") {
         let cp = scoreInfo.value;
-        let clamped = Math.max(-300, Math.min(300, cp));
-        let percentage = 50 + (clamped / 600) * 100;
+        let percentage = 50 + Math.tanh(cp / 300) * 50;
         innerBar.style.width = percentage + "%";
-        innerBar.style.backgroundColor = cp > 0 ? "green" : cp < 0 ? "red" : "gray";
+        innerBar.style.backgroundColor = cp > 0 ? "green" : "red";
         evalText.textContent = "Eval: " + cp + " cp";
       } else if (scoreInfo.type === "mate") {
-        innerBar.style.width = scoreInfo.value > 0 ? "100%" : "0%";
-        innerBar.style.backgroundColor = scoreInfo.value > 0 ? "green" : "red";
+        innerBar.style.width = "50%";
+        innerBar.style.backgroundColor = "gray";
         evalText.textContent = "Mate in " + Math.abs(scoreInfo.value);
       }
     }
 
-    // Наблюдение за изменениями доски (MutationObserver с дебаунсингом)
+    // === Функции отрисовки стрелок на доске ===
+
+    function getSquareCenter(square, boardRect) {
+      const squareSize = boardRect.width / 8;
+      let file = square[0];
+      let rank = parseInt(square[1], 10);
+      let fileIndex = file.charCodeAt(0) - "a".charCodeAt(0);
+      let rankIndex;
+      if (myColor === "w") {
+        rankIndex = 8 - rank;
+      } else {
+        rankIndex = rank - 1;
+        fileIndex = 7 - fileIndex;
+      }
+      return {
+        x: fileIndex * squareSize + squareSize / 2,
+        y: rankIndex * squareSize + squareSize / 2
+      };
+    }
+
+    function getArrowOverlay(board) {
+      let overlay = board.querySelector("#assistant-arrow-overlay");
+      if (!overlay) {
+        overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        overlay.setAttribute("id", "assistant-arrow-overlay");
+        overlay.style.position = "absolute";
+        overlay.style.top = "0";
+        overlay.style.left = "0";
+        overlay.style.width = "100%";
+        overlay.style.height = "100%";
+        overlay.style.pointerEvents = "none";
+        const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+        const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
+        marker.setAttribute("id", "arrowhead");
+        marker.setAttribute("markerWidth", "10");
+        marker.setAttribute("markerHeight", "7");
+        marker.setAttribute("refX", "0");
+        marker.setAttribute("refY", "3.5");
+        marker.setAttribute("orient", "auto");
+        const polygon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+        polygon.setAttribute("points", "0 0, 10 3.5, 0 7");
+        polygon.setAttribute("fill", "red");
+        marker.appendChild(polygon);
+        defs.appendChild(marker);
+        overlay.appendChild(defs);
+        board.style.position = "relative";
+        board.appendChild(overlay);
+      }
+      return overlay;
+    }
+
+    // Новая функция отрисовки стрелки с заданным цветом (не очищает предыдущие)
+    function drawColoredArrow(fromSquare, toSquare, strokeColor) {
+      let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
+      if (!board) return;
+      let boardRect = board.getBoundingClientRect();
+      let fromCenter = getSquareCenter(fromSquare, boardRect);
+      let toCenter = getSquareCenter(toSquare, boardRect);
+      let overlay = getArrowOverlay(board);
+      let line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", fromCenter.x);
+      line.setAttribute("y1", fromCenter.y);
+      line.setAttribute("x2", toCenter.x);
+      line.setAttribute("y2", toCenter.y);
+      line.setAttribute("stroke", strokeColor);
+      line.setAttribute("stroke-width", "4");
+      line.setAttribute("marker-end", "url(#arrowhead)");
+      overlay.appendChild(line);
+    }
+
+    function clearArrows() {
+      let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
+      if (!board) return;
+      let overlay = board.querySelector("#assistant-arrow-overlay");
+      if (overlay) {
+        overlay.innerHTML = "";
+      }
+    }
+
+    // === Конец функций отрисовки стрелок ===
+
+    // Функция выделения клетки (подсветка)
+    function highlightSquare(square, color) {
+      let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
+      if (!board) return;
+      let boardRect = board.getBoundingClientRect();
+      let squareSize = boardRect.width / 8;
+      let file = square[0];
+      let rank = parseInt(square[1], 10);
+      let fileIndex = file.charCodeAt(0) - "a".charCodeAt(0);
+      let rankIndex;
+      if (myColor === "w") {
+        rankIndex = 8 - rank;
+      } else {
+        rankIndex = rank - 1;
+        fileIndex = 7 - fileIndex;
+      }
+      let overlay = document.createElement("div");
+      overlay.className = "assistant-square-highlight";
+      overlay.style.position = "absolute";
+      overlay.style.width = squareSize + "px";
+      overlay.style.height = squareSize + "px";
+      overlay.style.left = (fileIndex * squareSize) + "px";
+      overlay.style.top = (rankIndex * squareSize) + "px";
+      overlay.style.backgroundColor = color;
+      overlay.style.opacity = "0.5";
+      overlay.style.pointerEvents = "none";
+      board.appendChild(overlay);
+      setTimeout(() => {
+        overlay.remove();
+      }, 3000);
+    }
+
+    // Функция оценки качества последнего хода и подсветки клетки назначения
+    // (Демонстрационная логика: если клетка назначения последнего сыгранного хода совпадает с клеткой первого рекомендованного хода – "best", иначе "blunder")
+    function evaluateLastMoveQuality() {
+      let moveListContainer = document.querySelector('.play-controller-moveList.move.list') ||
+                              document.querySelector('wc-simple-move-list');
+      if (moveListContainer) {
+        let moveElements;
+        if (myColor === "w") {
+          moveElements = moveListContainer.querySelectorAll('.node.white-move');
+        } else {
+          moveElements = moveListContainer.querySelectorAll('.node.black-move');
+        }
+        if (moveElements.length > 0) {
+          let lastMoveElement = moveElements[moveElements.length - 1];
+          let playedDest = lastMoveElement.textContent.trim();
+          if (bestMoves.length > 0 && bestMoves[0] && bestMoves[0].length >= 4) {
+            let bestDest = bestMoves[0].substring(2, 4);
+            let quality = (playedDest === bestDest) ? "best" : "blunder";
+            if (assistantShowMoveHighlight) {
+              highlightSquare(playedDest, qualityColors[quality]);
+            }
+            let qualityDisplay = document.getElementById("move-quality-display");
+            if (!qualityDisplay) {
+              qualityDisplay = document.createElement("div");
+              qualityDisplay.id = "move-quality-display";
+              qualityDisplay.style.position = "fixed";
+              qualityDisplay.style.bottom = "40px";
+              qualityDisplay.style.right = "10px";
+              qualityDisplay.style.backgroundColor = "black";
+              qualityDisplay.style.color = "white";
+              qualityDisplay.style.padding = "5px";
+              qualityDisplay.style.borderRadius = "5px";
+              qualityDisplay.style.zIndex = "10000";
+              document.body.appendChild(qualityDisplay);
+            }
+            qualityDisplay.textContent = "Move Quality: " + quality;
+          }
+        }
+      }
+    }
+
+    // Функция вычисления FEN-строки по расположению фигур
+    function calculateFENFromPieces(pieces) {
+      let boardMap = Array.from({ length: 8 }, () => Array(8).fill("1"));
+      pieces.forEach(piece => {
+        let square = null;
+        if (piece.parentElement) {
+          square = piece.parentElement.getAttribute("data-square");
+        }
+        if (!square) {
+          let squareMatch = piece.className.match(/square-(\d\d)/);
+          if (squareMatch) square = squareMatch[1];
+        }
+        if (!square) return;
+        let fileNum, rankNum;
+        if (/^[a-h][1-8]$/.test(square)) {
+          fileNum = square.charCodeAt(0) - "a".charCodeAt(0) + 1;
+          rankNum = parseInt(square[1], 10);
+        } else if (/^\d\d$/.test(square)) {
+          fileNum = parseInt(square[0], 10);
+          rankNum = parseInt(square[1], 10);
+        } else {
+          return;
+        }
+        let row = 8 - rankNum;
+        let col = fileNum - 1;
+        let pieceCode = null;
+        piece.classList.forEach(cls => {
+          if (/^(w|b)(p|r|n|b|q|k)$/.test(cls)) {
+            pieceCode = cls;
+          }
+        });
+        if (!pieceCode) return;
+        let color = pieceCode[0];
+        let type = pieceCode[1];
+        let fenChar = (color === 'w') ? type.toUpperCase() : type.toLowerCase();
+        boardMap[row][col] = fenChar;
+      });
+      let fenRows = boardMap.map(row => {
+        let fenRow = "";
+        let emptyCount = 0;
+        row.forEach(cell => {
+          if (cell === "1") {
+            emptyCount++;
+          } else {
+            if (emptyCount > 0) {
+              fenRow += emptyCount;
+              emptyCount = 0;
+            }
+            fenRow += cell;
+          }
+        });
+        if (emptyCount > 0) fenRow += emptyCount;
+        return fenRow;
+      });
+      return fenRows.join("/");
+    }
+
+    // Функция парсинга оценки из сообщения Stockfish
+    function parseScore(message) {
+      let parts = message.split(" ");
+      let idx = parts.indexOf("score");
+      if (idx !== -1 && parts.length > idx + 2) {
+        let scoreType = parts[idx + 1];
+        let scoreValue = parseInt(parts[idx + 2], 10);
+        if (scoreType === "cp") {
+          return { type: "cp", value: scoreValue };
+        } else if (scoreType === "mate") {
+          return { type: "mate", value: scoreValue };
+        }
+      }
+      return null;
+    }
+
+    // Функция обновления evaluation bar с нелинейным масштабированием
+    function updateEvaluationBar(scoreInfo) {
+      const evalBar = document.getElementById("evaluation-bar");
+      const innerBar = document.getElementById("evaluation-bar-inner");
+      const evalText = document.getElementById("evaluation-text");
+      if (!evalBar || !innerBar || !evalText) return;
+      if (scoreInfo.type === "cp") {
+        let cp = scoreInfo.value;
+        let percentage = 50 + Math.tanh(cp / 300) * 50;
+        innerBar.style.width = percentage + "%";
+        innerBar.style.backgroundColor = cp > 0 ? "green" : "red";
+        evalText.textContent = "Eval: " + cp + " cp";
+      } else if (scoreInfo.type === "mate") {
+        innerBar.style.width = "50%";
+        innerBar.style.backgroundColor = "gray";
+        evalText.textContent = "Mate in " + Math.abs(scoreInfo.value);
+      }
+    }
+
+    // === Функции отрисовки стрелок на доске ===
+
+    function getSquareCenter(square, boardRect) {
+      const squareSize = boardRect.width / 8;
+      let file = square[0];
+      let rank = parseInt(square[1], 10);
+      let fileIndex = file.charCodeAt(0) - "a".charCodeAt(0);
+      let rankIndex;
+      if (myColor === "w") {
+        rankIndex = 8 - rank;
+      } else {
+        rankIndex = rank - 1;
+        fileIndex = 7 - fileIndex;
+      }
+      return {
+        x: fileIndex * squareSize + squareSize / 2,
+        y: rankIndex * squareSize + squareSize / 2
+      };
+    }
+
+    function getArrowOverlay(board) {
+      let overlay = board.querySelector("#assistant-arrow-overlay");
+      if (!overlay) {
+        overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        overlay.setAttribute("id", "assistant-arrow-overlay");
+        overlay.style.position = "absolute";
+        overlay.style.top = "0";
+        overlay.style.left = "0";
+        overlay.style.width = "100%";
+        overlay.style.height = "100%";
+        overlay.style.pointerEvents = "none";
+        const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+        const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
+        marker.setAttribute("id", "arrowhead");
+        marker.setAttribute("markerWidth", "10");
+        marker.setAttribute("markerHeight", "7");
+        marker.setAttribute("refX", "0");
+        marker.setAttribute("refY", "3.5");
+        marker.setAttribute("orient", "auto");
+        const polygon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+        polygon.setAttribute("points", "0 0, 10 3.5, 0 7");
+        polygon.setAttribute("fill", "red");
+        marker.appendChild(polygon);
+        defs.appendChild(marker);
+        overlay.appendChild(defs);
+        board.style.position = "relative";
+        board.appendChild(overlay);
+      }
+      return overlay;
+    }
+
+    // Новая функция отрисовки стрелки с указанным цветом (не очищает предыдущие стрелки)
+    function drawColoredArrow(fromSquare, toSquare, strokeColor) {
+      let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
+      if (!board) return;
+      let boardRect = board.getBoundingClientRect();
+      let fromCenter = getSquareCenter(fromSquare, boardRect);
+      let toCenter = getSquareCenter(toSquare, boardRect);
+      let overlay = getArrowOverlay(board);
+      let line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", fromCenter.x);
+      line.setAttribute("y1", fromCenter.y);
+      line.setAttribute("x2", toCenter.x);
+      line.setAttribute("y2", toCenter.y);
+      line.setAttribute("stroke", strokeColor);
+      line.setAttribute("stroke-width", "4");
+      line.setAttribute("marker-end", "url(#arrowhead)");
+      overlay.appendChild(line);
+    }
+
+    function clearArrows() {
+      let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
+      if (!board) return;
+      let overlay = board.querySelector("#assistant-arrow-overlay");
+      if (overlay) {
+        overlay.innerHTML = "";
+      }
+    }
+
+    // === Конец функций отрисовки стрелок ===
+
+    // Функция выделения клетки (подсветка)
+    function highlightSquare(square, color) {
+      let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
+      if (!board) return;
+      let boardRect = board.getBoundingClientRect();
+      let squareSize = boardRect.width / 8;
+      let file = square[0];
+      let rank = parseInt(square[1], 10);
+      let fileIndex = file.charCodeAt(0) - "a".charCodeAt(0);
+      let rankIndex;
+      if (myColor === "w") {
+        rankIndex = 8 - rank;
+      } else {
+        rankIndex = rank - 1;
+        fileIndex = 7 - fileIndex;
+      }
+      let overlay = document.createElement("div");
+      overlay.className = "assistant-square-highlight";
+      overlay.style.position = "absolute";
+      overlay.style.width = squareSize + "px";
+      overlay.style.height = squareSize + "px";
+      overlay.style.left = (fileIndex * squareSize) + "px";
+      overlay.style.top = (rankIndex * squareSize) + "px";
+      overlay.style.backgroundColor = color;
+      overlay.style.opacity = "0.5";
+      overlay.style.pointerEvents = "none";
+      board.appendChild(overlay);
+      setTimeout(() => {
+        overlay.remove();
+      }, 3000);
+    }
+
+    // Функция оценки качества последнего хода и подсветки клетки назначения
+    // (Демонстрационная логика: если клетка назначения последнего сыгранного хода совпадает с клеткой первого рекомендованного хода – "best", иначе "blunder")
+    function evaluateLastMoveQuality() {
+      let moveListContainer = document.querySelector('.play-controller-moveList.move.list') ||
+                              document.querySelector('wc-simple-move-list');
+      if (moveListContainer) {
+        let moveElements;
+        if (myColor === "w") {
+          moveElements = moveListContainer.querySelectorAll('.node.white-move');
+        } else {
+          moveElements = moveListContainer.querySelectorAll('.node.black-move');
+        }
+        if (moveElements.length > 0) {
+          let lastMoveElement = moveElements[moveElements.length - 1];
+          let playedDest = lastMoveElement.textContent.trim();
+          if (bestMoves.length > 0 && bestMoves[0] && bestMoves[0].length >= 4) {
+            let bestDest = bestMoves[0].substring(2, 4);
+            let quality = (playedDest === bestDest) ? "best" : "blunder";
+            if (assistantShowMoveHighlight) {
+              highlightSquare(playedDest, qualityColors[quality]);
+            }
+            let qualityDisplay = document.getElementById("move-quality-display");
+            if (!qualityDisplay) {
+              qualityDisplay = document.createElement("div");
+              qualityDisplay.id = "move-quality-display";
+              qualityDisplay.style.position = "fixed";
+              qualityDisplay.style.bottom = "40px";
+              qualityDisplay.style.right = "10px";
+              qualityDisplay.style.backgroundColor = "black";
+              qualityDisplay.style.color = "white";
+              qualityDisplay.style.padding = "5px";
+              qualityDisplay.style.borderRadius = "5px";
+              qualityDisplay.style.zIndex = "10000";
+              document.body.appendChild(qualityDisplay);
+            }
+            qualityDisplay.textContent = "Move Quality: " + quality;
+          }
+        }
+      }
+    }
+
+    // Функция вычисления FEN-строки по расположению фигур
+    function calculateFENFromPieces(pieces) {
+      let boardMap = Array.from({ length: 8 }, () => Array(8).fill("1"));
+      pieces.forEach(piece => {
+        let square = null;
+        if (piece.parentElement) {
+          square = piece.parentElement.getAttribute("data-square");
+        }
+        if (!square) {
+          let squareMatch = piece.className.match(/square-(\d\d)/);
+          if (squareMatch) square = squareMatch[1];
+        }
+        if (!square) return;
+        let fileNum, rankNum;
+        if (/^[a-h][1-8]$/.test(square)) {
+          fileNum = square.charCodeAt(0) - "a".charCodeAt(0) + 1;
+          rankNum = parseInt(square[1], 10);
+        } else if (/^\d\d$/.test(square)) {
+          fileNum = parseInt(square[0], 10);
+          rankNum = parseInt(square[1], 10);
+        } else {
+          return;
+        }
+        let row = 8 - rankNum;
+        let col = fileNum - 1;
+        let pieceCode = null;
+        piece.classList.forEach(cls => {
+          if (/^(w|b)(p|r|n|b|q|k)$/.test(cls)) {
+            pieceCode = cls;
+          }
+        });
+        if (!pieceCode) return;
+        let color = pieceCode[0];
+        let type = pieceCode[1];
+        let fenChar = (color === 'w') ? type.toUpperCase() : type.toLowerCase();
+        boardMap[row][col] = fenChar;
+      });
+      let fenRows = boardMap.map(row => {
+        let fenRow = "";
+        let emptyCount = 0;
+        row.forEach(cell => {
+          if (cell === "1") {
+            emptyCount++;
+          } else {
+            if (emptyCount > 0) {
+              fenRow += emptyCount;
+              emptyCount = 0;
+            }
+            fenRow += cell;
+          }
+        });
+        if (emptyCount > 0) fenRow += emptyCount;
+        return fenRow;
+      });
+      return fenRows.join("/");
+    }
+
+    // Функция парсинга оценки из сообщения Stockfish
+    function parseScore(message) {
+      let parts = message.split(" ");
+      let idx = parts.indexOf("score");
+      if (idx !== -1 && parts.length > idx + 2) {
+        let scoreType = parts[idx + 1];
+        let scoreValue = parseInt(parts[idx + 2], 10);
+        if (scoreType === "cp") {
+          return { type: "cp", value: scoreValue };
+        } else if (scoreType === "mate") {
+          return { type: "mate", value: scoreValue };
+        }
+      }
+      return null;
+    }
+
+    // Функция обновления evaluation bar с нелинейным масштабированием
+    function updateEvaluationBar(scoreInfo) {
+      const evalBar = document.getElementById("evaluation-bar");
+      const innerBar = document.getElementById("evaluation-bar-inner");
+      const evalText = document.getElementById("evaluation-text");
+      if (!evalBar || !innerBar || !evalText) return;
+      if (scoreInfo.type === "cp") {
+        let cp = scoreInfo.value;
+        let percentage = 50 + Math.tanh(cp / 300) * 50;
+        innerBar.style.width = percentage + "%";
+        innerBar.style.backgroundColor = cp > 0 ? "green" : "red";
+        evalText.textContent = "Eval: " + cp + " cp";
+      } else if (scoreInfo.type === "mate") {
+        innerBar.style.width = "50%";
+        innerBar.style.backgroundColor = "gray";
+        evalText.textContent = "Mate in " + Math.abs(scoreInfo.value);
+      }
+    }
+
+    // === Функции отрисовки стрелок на доске ===
+
+    function getSquareCenter(square, boardRect) {
+      const squareSize = boardRect.width / 8;
+      let file = square[0];
+      let rank = parseInt(square[1], 10);
+      let fileIndex = file.charCodeAt(0) - "a".charCodeAt(0);
+      let rankIndex;
+      if (myColor === "w") {
+        rankIndex = 8 - rank;
+      } else {
+        rankIndex = rank - 1;
+        fileIndex = 7 - fileIndex;
+      }
+      return {
+        x: fileIndex * squareSize + squareSize / 2,
+        y: rankIndex * squareSize + squareSize / 2
+      };
+    }
+
+    function getArrowOverlay(board) {
+      let overlay = board.querySelector("#assistant-arrow-overlay");
+      if (!overlay) {
+        overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        overlay.setAttribute("id", "assistant-arrow-overlay");
+        overlay.style.position = "absolute";
+        overlay.style.top = "0";
+        overlay.style.left = "0";
+        overlay.style.width = "100%";
+        overlay.style.height = "100%";
+        overlay.style.pointerEvents = "none";
+        const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+        const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
+        marker.setAttribute("id", "arrowhead");
+        marker.setAttribute("markerWidth", "10");
+        marker.setAttribute("markerHeight", "7");
+        marker.setAttribute("refX", "0");
+        marker.setAttribute("refY", "3.5");
+        marker.setAttribute("orient", "auto");
+        const polygon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+        polygon.setAttribute("points", "0 0, 10 3.5, 0 7");
+        polygon.setAttribute("fill", "red");
+        marker.appendChild(polygon);
+        defs.appendChild(marker);
+        overlay.appendChild(defs);
+        board.style.position = "relative";
+        board.appendChild(overlay);
+      }
+      return overlay;
+    }
+
+    // Новая функция: отрисовка стрелки с указанным цветом (не очищает предыдущие)
+    function drawColoredArrow(fromSquare, toSquare, strokeColor) {
+      let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
+      if (!board) return;
+      let boardRect = board.getBoundingClientRect();
+      let fromCenter = getSquareCenter(fromSquare, boardRect);
+      let toCenter = getSquareCenter(toSquare, boardRect);
+      let overlay = getArrowOverlay(board);
+      let line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", fromCenter.x);
+      line.setAttribute("y1", fromCenter.y);
+      line.setAttribute("x2", toCenter.x);
+      line.setAttribute("y2", toCenter.y);
+      line.setAttribute("stroke", strokeColor);
+      line.setAttribute("stroke-width", "4");
+      line.setAttribute("marker-end", "url(#arrowhead)");
+      overlay.appendChild(line);
+    }
+
+    function clearArrows() {
+      let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
+      if (!board) return;
+      let overlay = board.querySelector("#assistant-arrow-overlay");
+      if (overlay) {
+        overlay.innerHTML = "";
+      }
+    }
+
+    // === Конец функций отрисовки стрелок ===
+
+    // Функция выделения клетки (подсветка)
+    function highlightSquare(square, color) {
+      let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
+      if (!board) return;
+      let boardRect = board.getBoundingClientRect();
+      let squareSize = boardRect.width / 8;
+      let file = square[0];
+      let rank = parseInt(square[1], 10);
+      let fileIndex = file.charCodeAt(0) - "a".charCodeAt(0);
+      let rankIndex;
+      if (myColor === "w") {
+        rankIndex = 8 - rank;
+      } else {
+        rankIndex = rank - 1;
+        fileIndex = 7 - fileIndex;
+      }
+      let overlay = document.createElement("div");
+      overlay.className = "assistant-square-highlight";
+      overlay.style.position = "absolute";
+      overlay.style.width = squareSize + "px";
+      overlay.style.height = squareSize + "px";
+      overlay.style.left = (fileIndex * squareSize) + "px";
+      overlay.style.top = (rankIndex * squareSize) + "px";
+      overlay.style.backgroundColor = color;
+      overlay.style.opacity = "0.5";
+      overlay.style.pointerEvents = "none";
+      board.appendChild(overlay);
+      setTimeout(() => {
+        overlay.remove();
+      }, 3000);
+    }
+
+    // Функция оценки качества последнего хода и подсветки клетки назначения
+    // (Демонстрационная логика: если клетка назначения последнего сыгранного хода совпадает с клеткой первого рекомендованного хода – "best", иначе "blunder")
+    function evaluateLastMoveQuality() {
+      let moveListContainer = document.querySelector('.play-controller-moveList.move.list') ||
+                              document.querySelector('wc-simple-move-list');
+      if (moveListContainer) {
+        let moveElements;
+        if (myColor === "w") {
+          moveElements = moveListContainer.querySelectorAll('.node.white-move');
+        } else {
+          moveElements = moveListContainer.querySelectorAll('.node.black-move');
+        }
+        if (moveElements.length > 0) {
+          let lastMoveElement = moveElements[moveElements.length - 1];
+          let playedDest = lastMoveElement.textContent.trim();
+          if (bestMoves.length > 0 && bestMoves[0] && bestMoves[0].length >= 4) {
+            let bestDest = bestMoves[0].substring(2, 4);
+            let quality = (playedDest === bestDest) ? "best" : "blunder";
+            if (assistantShowMoveHighlight) {
+              highlightSquare(playedDest, qualityColors[quality]);
+            }
+            let qualityDisplay = document.getElementById("move-quality-display");
+            if (!qualityDisplay) {
+              qualityDisplay = document.createElement("div");
+              qualityDisplay.id = "move-quality-display";
+              qualityDisplay.style.position = "fixed";
+              qualityDisplay.style.bottom = "40px";
+              qualityDisplay.style.right = "10px";
+              qualityDisplay.style.backgroundColor = "black";
+              qualityDisplay.style.color = "white";
+              qualityDisplay.style.padding = "5px";
+              qualityDisplay.style.borderRadius = "5px";
+              qualityDisplay.style.zIndex = "10000";
+              document.body.appendChild(qualityDisplay);
+            }
+            qualityDisplay.textContent = "Move Quality: " + quality;
+          }
+        }
+      }
+    }
+
+    // Функция вычисления FEN-строки по расположению фигур
+    function calculateFENFromPieces(pieces) {
+      let boardMap = Array.from({ length: 8 }, () => Array(8).fill("1"));
+      pieces.forEach(piece => {
+        let square = null;
+        if (piece.parentElement) {
+          square = piece.parentElement.getAttribute("data-square");
+        }
+        if (!square) {
+          let squareMatch = piece.className.match(/square-(\d\d)/);
+          if (squareMatch) square = squareMatch[1];
+        }
+        if (!square) return;
+        let fileNum, rankNum;
+        if (/^[a-h][1-8]$/.test(square)) {
+          fileNum = square.charCodeAt(0) - "a".charCodeAt(0) + 1;
+          rankNum = parseInt(square[1], 10);
+        } else if (/^\d\d$/.test(square)) {
+          fileNum = parseInt(square[0], 10);
+          rankNum = parseInt(square[1], 10);
+        } else {
+          return;
+        }
+        let row = 8 - rankNum;
+        let col = fileNum - 1;
+        let pieceCode = null;
+        piece.classList.forEach(cls => {
+          if (/^(w|b)(p|r|n|b|q|k)$/.test(cls)) {
+            pieceCode = cls;
+          }
+        });
+        if (!pieceCode) return;
+        let color = pieceCode[0];
+        let type = pieceCode[1];
+        let fenChar = (color === 'w') ? type.toUpperCase() : type.toLowerCase();
+        boardMap[row][col] = fenChar;
+      });
+      let fenRows = boardMap.map(row => {
+        let fenRow = "";
+        let emptyCount = 0;
+        row.forEach(cell => {
+          if (cell === "1") {
+            emptyCount++;
+          } else {
+            if (emptyCount > 0) {
+              fenRow += emptyCount;
+              emptyCount = 0;
+            }
+            fenRow += cell;
+          }
+        });
+        if (emptyCount > 0) fenRow += emptyCount;
+        return fenRow;
+      });
+      return fenRows.join("/");
+    }
+
+    // Функция парсинга оценки из сообщения Stockfish
+    function parseScore(message) {
+      let parts = message.split(" ");
+      let idx = parts.indexOf("score");
+      if (idx !== -1 && parts.length > idx + 2) {
+        let scoreType = parts[idx + 1];
+        let scoreValue = parseInt(parts[idx + 2], 10);
+        if (scoreType === "cp") {
+          return { type: "cp", value: scoreValue };
+        } else if (scoreType === "mate") {
+          return { type: "mate", value: scoreValue };
+        }
+      }
+      return null;
+    }
+
+    // Функция обновления evaluation bar с нелинейным масштабированием
+    function updateEvaluationBar(scoreInfo) {
+      const evalBar = document.getElementById("evaluation-bar");
+      const innerBar = document.getElementById("evaluation-bar-inner");
+      const evalText = document.getElementById("evaluation-text");
+      if (!evalBar || !innerBar || !evalText) return;
+      if (scoreInfo.type === "cp") {
+        let cp = scoreInfo.value;
+        let percentage = 50 + Math.tanh(cp / 300) * 50;
+        innerBar.style.width = percentage + "%";
+        innerBar.style.backgroundColor = cp > 0 ? "green" : "red";
+        evalText.textContent = "Eval: " + cp + " cp";
+      } else if (scoreInfo.type === "mate") {
+        innerBar.style.width = "50%";
+        innerBar.style.backgroundColor = "gray";
+        evalText.textContent = "Mate in " + Math.abs(scoreInfo.value);
+      }
+    }
+
+    // === Функции отрисовки стрелок на доске ===
+
+    function getSquareCenter(square, boardRect) {
+      const squareSize = boardRect.width / 8;
+      let file = square[0];
+      let rank = parseInt(square[1], 10);
+      let fileIndex = file.charCodeAt(0) - "a".charCodeAt(0);
+      let rankIndex;
+      if (myColor === "w") {
+        rankIndex = 8 - rank;
+      } else {
+        rankIndex = rank - 1;
+        fileIndex = 7 - fileIndex;
+      }
+      return {
+        x: fileIndex * squareSize + squareSize / 2,
+        y: rankIndex * squareSize + squareSize / 2
+      };
+    }
+
+    function getArrowOverlay(board) {
+      let overlay = board.querySelector("#assistant-arrow-overlay");
+      if (!overlay) {
+        overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        overlay.setAttribute("id", "assistant-arrow-overlay");
+        overlay.style.position = "absolute";
+        overlay.style.top = "0";
+        overlay.style.left = "0";
+        overlay.style.width = "100%";
+        overlay.style.height = "100%";
+        overlay.style.pointerEvents = "none";
+        const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
+        const marker = document.createElementNS("http://www.w3.org/2000/svg", "marker");
+        marker.setAttribute("id", "arrowhead");
+        marker.setAttribute("markerWidth", "10");
+        marker.setAttribute("markerHeight", "7");
+        marker.setAttribute("refX", "0");
+        marker.setAttribute("refY", "3.5");
+        marker.setAttribute("orient", "auto");
+        const polygon = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+        polygon.setAttribute("points", "0 0, 10 3.5, 0 7");
+        polygon.setAttribute("fill", "red");
+        marker.appendChild(polygon);
+        defs.appendChild(marker);
+        overlay.appendChild(defs);
+        board.style.position = "relative";
+        board.appendChild(overlay);
+      }
+      return overlay;
+    }
+
+    // Новая функция отрисовки стрелки с заданным цветом
+    function drawColoredArrow(fromSquare, toSquare, strokeColor) {
+      let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
+      if (!board) return;
+      let boardRect = board.getBoundingClientRect();
+      let fromCenter = getSquareCenter(fromSquare, boardRect);
+      let toCenter = getSquareCenter(toSquare, boardRect);
+      let overlay = getArrowOverlay(board);
+      let line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+      line.setAttribute("x1", fromCenter.x);
+      line.setAttribute("y1", fromCenter.y);
+      line.setAttribute("x2", toCenter.x);
+      line.setAttribute("y2", toCenter.y);
+      line.setAttribute("stroke", strokeColor);
+      line.setAttribute("stroke-width", "4");
+      line.setAttribute("marker-end", "url(#arrowhead)");
+      overlay.appendChild(line);
+    }
+
+    function clearArrows() {
+      let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
+      if (!board) return;
+      let overlay = board.querySelector("#assistant-arrow-overlay");
+      if (overlay) {
+        overlay.innerHTML = "";
+      }
+    }
+
+    // === Конец функций отрисовки стрелок ===
+
+    // Функция выделения клетки (подсветка)
+    function highlightSquare(square, color) {
+      let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
+      if (!board) return;
+      let boardRect = board.getBoundingClientRect();
+      let squareSize = boardRect.width / 8;
+      let file = square[0];
+      let rank = parseInt(square[1], 10);
+      let fileIndex = file.charCodeAt(0) - "a".charCodeAt(0);
+      let rankIndex;
+      if (myColor === "w") {
+        rankIndex = 8 - rank;
+      } else {
+        rankIndex = rank - 1;
+        fileIndex = 7 - fileIndex;
+      }
+      let overlay = document.createElement("div");
+      overlay.className = "assistant-square-highlight";
+      overlay.style.position = "absolute";
+      overlay.style.width = squareSize + "px";
+      overlay.style.height = squareSize + "px";
+      overlay.style.left = (fileIndex * squareSize) + "px";
+      overlay.style.top = (rankIndex * squareSize) + "px";
+      overlay.style.backgroundColor = color;
+      overlay.style.opacity = "0.5";
+      overlay.style.pointerEvents = "none";
+      board.appendChild(overlay);
+      setTimeout(() => {
+        overlay.remove();
+      }, 3000);
+    }
+
+    // Функция оценки качества последнего хода и подсветки клетки назначения
+    // (Демонстрационная логика: если клетка назначения последнего сыгранного хода совпадает с клеткой первого рекомендованного хода – "best", иначе "blunder")
+    function evaluateLastMoveQuality() {
+      let moveListContainer = document.querySelector('.play-controller-moveList.move.list') ||
+                              document.querySelector('wc-simple-move-list');
+      if (moveListContainer) {
+        let moveElements;
+        if (myColor === "w") {
+          moveElements = moveListContainer.querySelectorAll('.node.white-move');
+        } else {
+          moveElements = moveListContainer.querySelectorAll('.node.black-move');
+        }
+        if (moveElements.length > 0) {
+          let lastMoveElement = moveElements[moveElements.length - 1];
+          let playedDest = lastMoveElement.textContent.trim();
+          if (bestMoves.length > 0 && bestMoves[0] && bestMoves[0].length >= 4) {
+            let bestDest = bestMoves[0].substring(2, 4);
+            let quality = (playedDest === bestDest) ? "best" : "blunder";
+            if (assistantShowMoveHighlight) {
+              highlightSquare(playedDest, qualityColors[quality]);
+            }
+            let qualityDisplay = document.getElementById("move-quality-display");
+            if (!qualityDisplay) {
+              qualityDisplay = document.createElement("div");
+              qualityDisplay.id = "move-quality-display";
+              qualityDisplay.style.position = "fixed";
+              qualityDisplay.style.bottom = "40px";
+              qualityDisplay.style.right = "10px";
+              qualityDisplay.style.backgroundColor = "black";
+              qualityDisplay.style.color = "white";
+              qualityDisplay.style.padding = "5px";
+              qualityDisplay.style.borderRadius = "5px";
+              qualityDisplay.style.zIndex = "10000";
+              document.body.appendChild(qualityDisplay);
+            }
+            qualityDisplay.textContent = "Move Quality: " + quality;
+          }
+        }
+      }
+    }
+
+    // Функция вычисления FEN-строки по расположению фигур
+    function calculateFENFromPieces(pieces) {
+      let boardMap = Array.from({ length: 8 }, () => Array(8).fill("1"));
+      pieces.forEach(piece => {
+        let square = null;
+        if (piece.parentElement) {
+          square = piece.parentElement.getAttribute("data-square");
+        }
+        if (!square) {
+          let squareMatch = piece.className.match(/square-(\d\d)/);
+          if (squareMatch) square = squareMatch[1];
+        }
+        if (!square) return;
+        let fileNum, rankNum;
+        if (/^[a-h][1-8]$/.test(square)) {
+          fileNum = square.charCodeAt(0) - "a".charCodeAt(0) + 1;
+          rankNum = parseInt(square[1], 10);
+        } else if (/^\d\d$/.test(square)) {
+          fileNum = parseInt(square[0], 10);
+          rankNum = parseInt(square[1], 10);
+        } else {
+          return;
+        }
+        let row = 8 - rankNum;
+        let col = fileNum - 1;
+        let pieceCode = null;
+        piece.classList.forEach(cls => {
+          if (/^(w|b)(p|r|n|b|q|k)$/.test(cls)) {
+            pieceCode = cls;
+          }
+        });
+        if (!pieceCode) return;
+        let color = pieceCode[0];
+        let type = pieceCode[1];
+        let fenChar = (color === 'w') ? type.toUpperCase() : type.toLowerCase();
+        boardMap[row][col] = fenChar;
+      });
+      let fenRows = boardMap.map(row => {
+        let fenRow = "";
+        let emptyCount = 0;
+        row.forEach(cell => {
+          if (cell === "1") {
+            emptyCount++;
+          } else {
+            if (emptyCount > 0) {
+              fenRow += emptyCount;
+              emptyCount = 0;
+            }
+            fenRow += cell;
+          }
+        });
+        if (emptyCount > 0) fenRow += emptyCount;
+        return fenRow;
+      });
+      return fenRows.join("/");
+    }
+
+    // Функция парсинга оценки из сообщения Stockfish
+    function parseScore(message) {
+      let parts = message.split(" ");
+      let idx = parts.indexOf("score");
+      if (idx !== -1 && parts.length > idx + 2) {
+        let scoreType = parts[idx + 1];
+        let scoreValue = parseInt(parts[idx + 2], 10);
+        if (scoreType === "cp") {
+          return { type: "cp", value: scoreValue };
+        } else if (scoreType === "mate") {
+          return { type: "mate", value: scoreValue };
+        }
+      }
+      return null;
+    }
+
+    // Функция обновления evaluation bar с нелинейным масштабированием
+    function updateEvaluationBar(scoreInfo) {
+      const evalBar = document.getElementById("evaluation-bar");
+      const innerBar = document.getElementById("evaluation-bar-inner");
+      const evalText = document.getElementById("evaluation-text");
+      if (!evalBar || !innerBar || !evalText) return;
+      if (scoreInfo.type === "cp") {
+        let cp = scoreInfo.value;
+        let percentage = 50 + Math.tanh(cp / 300) * 50;
+        innerBar.style.width = percentage + "%";
+        innerBar.style.backgroundColor = cp > 0 ? "green" : "red";
+        evalText.textContent = "Eval: " + cp + " cp";
+      } else if (scoreInfo.type === "mate") {
+        innerBar.style.width = "50%";
+        innerBar.style.backgroundColor = "gray";
+        evalText.textContent = "Mate in " + Math.abs(scoreInfo.value);
+      }
+    }
+
+    // === Конец функций отрисовки стрелок и оценки ===
+
+    // Функция отображения рекомендованных ходов (несколько вариантов)
+    function showBestMoves(moves) {
+      let moveDisplay = document.getElementById("best-move-display");
+      if (!moveDisplay) {
+        moveDisplay = document.createElement("div");
+        moveDisplay.id = "best-move-display";
+        moveDisplay.style.position = "fixed";
+        moveDisplay.style.bottom = "10px";
+        moveDisplay.style.right = "10px";
+        moveDisplay.style.backgroundColor = "black";
+        moveDisplay.style.color = "white";
+        moveDisplay.style.padding = "10px";
+        moveDisplay.style.borderRadius = "5px";
+        document.body.appendChild(moveDisplay);
+      }
+      moveDisplay.innerText = "Рекомендованные ходы: " + moves.join(", ");
+      if (assistantShowArrows) {
+        clearArrows();
+        // Отрисовываем стрелки для каждого варианта: первый зеленый, второй синий
+        moves.forEach((move, idx) => {
+          if (move.length >= 4) {
+            let fromSquare = move.substring(0, 2);
+            let toSquare = move.substring(2, 4);
+            let arrowColor = (idx === 0) ? "green" : "blue";
+            drawColoredArrow(fromSquare, toSquare, arrowColor);
+          }
+        });
+      }
+    }
+
+    // Функция проверки доски, определения текущего хода и запуска анализа
+    function checkBoard() {
+      let board = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
+      if (!board) {
+        dlog("Шахматная доска не найдена!");
+        return;
+      }
+      let turnFromList = getCurrentTurnFromMoveList();
+      if (turnFromList !== null) {
+        currentTurn = turnFromList;
+        dlog("Определение через список ходов: сейчас ход", currentTurn);
+      } else {
+        let boardHash = computeBoardHash();
+        dlog("Вычисленный хеш позиции (резерв):", boardHash);
+        if (lastBoardHash === "") {
+          lastBoardHash = boardHash;
+        } else if (boardHash !== lastBoardHash) {
+          currentTurn = (currentTurn === "w") ? "b" : "w";
+          dlog("Позиция изменилась (резерв). Теперь ход:", currentTurn);
+          lastBoardHash = boardHash;
+        } else {
+          dlog("Позиция не изменилась (резерв).");
+        }
+      }
+      // Если сейчас не ваш ход – оцениваем последний ход и очищаем совет
+      if (currentTurn !== myColor) {
+        dlog("Сейчас ход", currentTurn, "(не мой, мой цвет:", myColor, "). Оценка сыгранного хода.");
+        if (assistantShowMoveHighlight) evaluateLastMoveQuality();
+        clearSuggestion();
+        return;
+      }
+      let fen = computeBoardHash() + " " + currentTurn + " - - 0 1";
+      dlog("Мой ход. FEN:", fen);
+      analyzePosition(fen);
+    }
+
+    // Функция отображения одного рекомендованного хода (для случая, если вариант один)
+    function showBestMove(move) {
+      showBestMoves([move]);
+    }
+
+    // Периодическая проверка доски и наблюдение за изменениями
     function observeBoardChanges() {
       let boardContainer = document.querySelector(".board") || document.querySelector("[board-id='board-single']");
       if (!boardContainer) {
@@ -629,7 +1615,6 @@
       observer.observe(boardContainer, { childList: true, subtree: true });
     }
 
-    // Периодическая проверка доски (на случай, если MutationObserver не сработал)
     setInterval(() => {
       checkBoard();
     }, 3000);
